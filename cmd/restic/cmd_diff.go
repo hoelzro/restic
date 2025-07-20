@@ -587,7 +587,7 @@ func runDiff(ctx context.Context, opts DiffOptions, gopts GlobalOptions, args []
 		}
 		enc := json.NewEncoder(globalOptions.stdout)
 		if err := enc.Encode(stats); err != nil {
-			Warnf("JSON encode failed: %v\n", err)
+			return errors.Fatalf("JSON encode failed: %v", err)
 		}
 		return nil
 	}
