@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"path"
 	"reflect"
+	"slices"
 	"sort"
 
 	"github.com/restic/restic/internal/debug"
@@ -312,10 +314,7 @@ func diffTreeStats(ctx context.Context, repo restic.Repository, id1, id2 restic.
 		uniq[p] = struct{}{}
 	}
 
-	list := make([]string, 0, len(uniq))
-	for p := range uniq {
-		list = append(list, p)
-	}
+	list := slices.Collect(maps.Keys(uniq))
 	sort.Strings(list)
 
 	stats := make([]TreeDiffStats, 0, len(list))
