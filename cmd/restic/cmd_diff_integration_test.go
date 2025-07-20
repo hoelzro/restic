@@ -24,8 +24,7 @@ func testRunDiffOutput(gopts GlobalOptions, firstSnapshotID string, secondSnapsh
 	return buf.String(), err
 }
 
-func testRunDiffTreeOutput(gopts GlobalOptions, firstSnapshotID, secondSnapshotID string) ([]TreeDiffStats, error) {
-	var result []TreeDiffStats
+func testRunDiffTreeOutput(gopts GlobalOptions, firstSnapshotID, secondSnapshotID string) (*TreeDiffStats, error) {
 	buf, err := withCaptureStdout(func() error {
 		opts := DiffOptions{Tree: true}
 		return runDiff(context.TODO(), opts, gopts, []string{firstSnapshotID, secondSnapshotID})
@@ -33,15 +32,12 @@ func testRunDiffTreeOutput(gopts GlobalOptions, firstSnapshotID, secondSnapshotI
 	if err != nil {
 		return nil, err
 	}
-	scanner := bufio.NewScanner(strings.NewReader(buf.String()))
-	for scanner.Scan() {
-		var stat TreeDiffStats
-		if e := json.Unmarshal(scanner.Bytes(), &stat); e != nil {
-			return nil, e
-		}
-		result = append(result, stat)
+	var stat TreeDiffStats
+	err = json.Unmarshal(buf.Bytes(), &stat)
+	if err != nil {
+		return nil, err
 	}
-	return result, scanner.Err()
+	return &stat, nil
 }
 
 func copyFile(dst string, src string) error {
@@ -219,13 +215,7 @@ func TestDiffTree(t *testing.T) {
 	env.gopts.Quiet = true
 	stats, err := testRunDiffTreeOutput(env.gopts, firstSnapshotID, secondSnapshotID)
 	rtest.OK(t, err)
-	rtest.Assert(t, len(stats) > 0, "no tree stats returned")
-	foundRoot := false
-	for _, st := range stats {
-		if st.Path == "/" {
-			foundRoot = true
-			rtest.Assert(t, st.BytesAdded > 0 || st.BytesRemoved > 0 || st.BytesCommon > 0, "root stats empty")
-		}
-	}
-	rtest.Assert(t, foundRoot, "root path not found in tree stats")
+	rtest.Assert(t, stats != nil, "no tree stats returned")
+	rtest.Assert(t, stats.Path == "/", "unexpected root path")
+	rtest.Assert(t, stats.BytesAdded > 0 || stats.BytesRemoved > 0 || stats.BytesCommon > 0, "root stats empty")
 }
