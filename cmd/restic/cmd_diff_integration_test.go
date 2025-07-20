@@ -24,6 +24,22 @@ func testRunDiffOutput(gopts GlobalOptions, firstSnapshotID string, secondSnapsh
 	return buf.String(), err
 }
 
+func testRunDiffTreeOutput(gopts GlobalOptions, firstSnapshotID, secondSnapshotID string) (*TreeDiffStats, error) {
+	buf, err := withCaptureStdout(func() error {
+		opts := DiffOptions{Tree: true}
+		return runDiff(context.TODO(), opts, gopts, []string{firstSnapshotID, secondSnapshotID})
+	})
+	if err != nil {
+		return nil, err
+	}
+	var stat TreeDiffStats
+	err = json.Unmarshal(buf.Bytes(), &stat)
+	if err != nil {
+		return nil, err
+	}
+	return &stat, nil
+}
+
 func copyFile(dst string, src string) error {
 	srcFile, err := os.Open(src)
 	if err != nil {
@@ -190,4 +206,16 @@ func TestDiffJSON(t *testing.T) {
 		stat.Removed.Files == 1 && stat.Removed.Dirs == 2 && stat.Removed.DataBlobs == 1 &&
 		stat.ChangedFiles == 1, "unexpected statistics")
 	rtest.Assert(t, stat.SourceSnapshot == firstSnapshotID && stat.TargetSnapshot == secondSnapshotID, "unexpected snapshot ids")
+}
+
+func TestDiffTree(t *testing.T) {
+	env, cleanup, firstSnapshotID, secondSnapshotID := setupDiffRepo(t)
+	defer cleanup()
+
+	env.gopts.Quiet = true
+	stats, err := testRunDiffTreeOutput(env.gopts, firstSnapshotID, secondSnapshotID)
+	rtest.OK(t, err)
+	rtest.Assert(t, stats != nil, "no tree stats returned")
+	rtest.Assert(t, stats.Path == "/", "unexpected root path")
+	rtest.Assert(t, stats.BytesAdded > 0 || stats.BytesRemoved > 0 || stats.BytesCommon > 0, "root stats empty")
 }
