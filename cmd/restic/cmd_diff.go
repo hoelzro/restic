@@ -63,10 +63,12 @@ Exit status is 12 if the password is incorrect.
 // DiffOptions collects all options for the diff command.
 type DiffOptions struct {
 	ShowMetadata bool
+	Tree         bool
 }
 
 func (opts *DiffOptions) AddFlags(f *pflag.FlagSet) {
 	f.BoolVar(&opts.ShowMetadata, "metadata", false, "print changes in metadata")
+	f.BoolVar(&opts.Tree, "tree", false, "print per-path blob statistics in JSON")
 }
 
 func loadSnapshot(ctx context.Context, be restic.Lister, repo restic.LoaderUnpacked, desc string) (*restic.Snapshot, string, error) {
@@ -152,6 +154,17 @@ type DiffStatsContainer struct {
 	Added                                DiffStat       `json:"added"`
 	Removed                              DiffStat       `json:"removed"`
 	BlobsBefore, BlobsAfter, BlobsCommon restic.BlobSet `json:"-"`
+}
+
+type TreeDiffStats struct {
+	MessageType  string `json:"message_type"`
+	Path         string `json:"path"`
+	BlobsAdded   int    `json:"blobs_added"`
+	BytesAdded   uint64 `json:"bytes_added"`
+	BlobsRemoved int    `json:"blobs_removed"`
+	BytesRemoved uint64 `json:"bytes_removed"`
+	BlobsCommon  int    `json:"blobs_common"`
+	BytesCommon  uint64 `json:"bytes_common"`
 }
 
 // updateBlobs updates the blob counters in the stats struct.
@@ -251,6 +264,99 @@ func uniqueNodeNames(tree1, tree2 *restic.Tree) (tree1Nodes, tree2Nodes map[stri
 
 	sort.Strings(uniqueNames)
 	return tree1Nodes, tree2Nodes, uniqueNames
+}
+
+func collectPathBlobs(ctx context.Context, repo restic.BlobLoader, prefix string, id restic.ID, paths map[string]restic.BlobSet) (restic.BlobSet, error) {
+	tree, err := restic.LoadTree(ctx, repo, id)
+	if err != nil {
+		return nil, err
+	}
+	bs := restic.NewBlobSet()
+	bs.Insert(restic.BlobHandle{ID: id, Type: restic.TreeBlob})
+	for _, node := range tree.Nodes {
+		nodePath := path.Join(prefix, node.Name)
+		if node.Type == restic.NodeTypeDir {
+			nodePath += "/"
+		}
+		nbs := restic.NewBlobSet()
+		addBlobs(nbs, node)
+		if node.Type == restic.NodeTypeDir {
+			sub, err := collectPathBlobs(ctx, repo, nodePath, *node.Subtree, paths)
+			if err != nil {
+				return nil, err
+			}
+			nbs.Merge(sub)
+		}
+		paths[nodePath] = nbs
+		bs.Merge(nbs)
+	}
+	paths[prefix] = bs
+	return bs, nil
+}
+
+func diffTreeStats(ctx context.Context, repo restic.Repository, id1, id2 restic.ID) ([]TreeDiffStats, error) {
+	paths1 := make(map[string]restic.BlobSet)
+	paths2 := make(map[string]restic.BlobSet)
+	if _, err := collectPathBlobs(ctx, repo, "/", id1, paths1); err != nil {
+		return nil, err
+	}
+	if _, err := collectPathBlobs(ctx, repo, "/", id2, paths2); err != nil {
+		return nil, err
+	}
+
+	uniq := make(map[string]struct{})
+	for p := range paths1 {
+		uniq[p] = struct{}{}
+	}
+	for p := range paths2 {
+		uniq[p] = struct{}{}
+	}
+
+	list := make([]string, 0, len(uniq))
+	for p := range uniq {
+		list = append(list, p)
+	}
+	sort.Strings(list)
+
+	stats := make([]TreeDiffStats, 0, len(list))
+	for _, p := range list {
+		set1 := paths1[p]
+		set2 := paths2[p]
+		added := set2.Sub(set1)
+		removed := set1.Sub(set2)
+		common := set1.Intersect(set2)
+
+		addCount, addBytes := blobCountSize(repo, added)
+		remCount, remBytes := blobCountSize(repo, removed)
+		comCount, comBytes := blobCountSize(repo, common)
+
+		stats = append(stats, TreeDiffStats{
+			MessageType:  "tree-stat",
+			Path:         p,
+			BlobsAdded:   addCount,
+			BytesAdded:   addBytes,
+			BlobsRemoved: remCount,
+			BytesRemoved: remBytes,
+			BlobsCommon:  comCount,
+			BytesCommon:  comBytes,
+		})
+	}
+	return stats, nil
+}
+
+func blobCountSize(repo restic.Repository, set restic.BlobSet) (int, uint64) {
+	var c int
+	var b uint64
+	for h := range set {
+		c++
+		size, found := repo.LookupBlobSize(h.Type, h.ID)
+		if !found {
+			Warnf("unable to find blob size for %v\n", h)
+			continue
+		}
+		b += uint64(size)
+	}
+	return c, b
 }
 
 func (c *Comparer) diffTree(ctx context.Context, stats *DiffStatsContainer, prefix string, id1, id2 restic.ID) error {
@@ -364,6 +470,10 @@ func runDiff(ctx context.Context, opts DiffOptions, gopts GlobalOptions, args []
 		return errors.Fatalf("specify two snapshot IDs")
 	}
 
+	if opts.Tree {
+		gopts.JSON = true
+	}
+
 	ctx, repo, unlock, err := openWithReadLock(ctx, gopts, gopts.NoLock)
 	if err != nil {
 		return err
@@ -409,6 +519,20 @@ func runDiff(ctx context.Context, opts DiffOptions, gopts GlobalOptions, args []
 	sn2.Tree, err = restic.FindTreeDirectory(ctx, repo, sn2.Tree, subfolder2)
 	if err != nil {
 		return err
+	}
+
+	if opts.Tree {
+		trees, err := diffTreeStats(ctx, repo, *sn1.Tree, *sn2.Tree)
+		if err != nil {
+			return err
+		}
+		enc := json.NewEncoder(globalOptions.stdout)
+		for _, t := range trees {
+			if err := enc.Encode(t); err != nil {
+				Warnf("JSON encode failed: %v\n", err)
+			}
+		}
+		return nil
 	}
 
 	c := &Comparer{

@@ -1,0 +1,8 @@
+Enhancement: Add --tree option to diff command
+
+Restic diff can now print per-path blob statistics when called with the
+`--tree` flag. The output is always in JSON format and lists for each path
+how many blobs and bytes were added, removed and are common between two
+snapshots.
+
+https://github.com/restic/restic/pull/0000
